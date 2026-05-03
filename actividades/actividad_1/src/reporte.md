@@ -27,8 +27,7 @@ Ejemplo de uso: (con pattern matching que permite manejar ambos casos)
 
 De esta manera, si encontramos el valor que buscamos se devuelve dentro de `Some()`. Si no se encuentra el valor, simplemente se obtiene `None`. El compilador nos obliga a manejar ambos casos con el match que cubre las variantes `Some` y `None`, y así nos aseguramos de que siempre habrá un valor válido porque hemos cubierto todas las posibilidades.
 
-El manejo del enum `Option` y del `Result` (que veremos luego) juegan un rol clave en la seguridad y el manejo correcto de la memoria, características fundamentales de Rust. 
-
+El manejo del enum `Option` y del `Result` (que veremos luego) juegan un rol clave en la seguridad y el manejo correcto de la memoria, características fundamentales de Rust.
 
 #### <u>Result</u>
 
@@ -64,4 +63,61 @@ Ejemplo de uso: (con pattern matching que permite manejar ambos casos resultante
     }
 
 ```
+
 El compilador nos obliga a manejar los dos casos: el exitoso `Ok` y el fallido `Err`. Asi nos aseguramos que nunca se nos pase por alto un error. Esto hace que nuestro programa sea mas robusto frente a fallas, porque permite que pensemos en todas las posibilidades y podamos decidir como manejarlas antes de que ocurran.
+
+---
+
+### 4. Ownership, Threads y Testing
+
+#### <u>Ownership</u>
+
+En Rust, cada valor tiene un único dueño (_owner_). Cuando ese dueño sale de scope, el valor se libera. Si pasamos un valor a una función **por valor**, el ownership se mueve (_move_) a esa función y la variable original queda inválida.
+
+En el código definimos dos funciones para ilustrar esto:
+
+```rust
+// Toma ownership: tarea deja de ser válida en el llamador
+fn describir_tarea_por_valor(t: Tarea) {
+    println!("(por valor) {:?}", t);
+}
+
+// Recibe un préstamo: tarea sigue siendo válida en el llamador
+fn describir_tarea_por_referencia(t: &Tarea) {
+    println!("(por referencia) {:?}", t);
+}
+```
+
+Si intentáramos usar `describir_tarea_por_valor` y luego acceder a la variable original, el compilador lo rechazaría:
+
+```rust
+// Esto NO compila:
+let tarea_demo = Tarea::nueva(10, String::from("Demo ownership"));
+describir_tarea_por_valor(tarea_demo); // ownership movido
+tarea_demo.imprimir_estado();          // error[E0382]: use of moved value
+```
+
+La solución es pasar una referencia con `&`, de modo que la función sólo _presta_ el valor sin tomar su ownership:
+
+```rust
+// Esto SÍ compila:
+let tarea_demo = Tarea::nueva(10, String::from("Demo ownership"));
+describir_tarea_por_referencia(&tarea_demo); // préstamo inmutable
+tarea_demo.imprimir_estado();                // OK: seguimos siendo dueños
+```
+
+#### <u>Threads</u>
+
+Rust permite lanzar hilos con `std::thread::spawn`. Para que el hilo pueda usar una variable local, usamos la palabra clave `move` en el closure, que transfiere el ownership de la variable al hilo:
+
+```rust
+let tarea_hilo = Tarea::nueva(11, String::from("Tarea procesada en segundo plano"));
+let handle = thread::spawn(move || {
+    let mut t = tarea_hilo; // ownership transferido al hilo secundario
+    t.ejecutar();
+});
+println!("Hilo principal: esperando que el hilo secundario termine...");
+handle.join().unwrap(); // esperamos a que el hilo termine
+```
+
+El hilo principal sigue ejecutándose (imprime el mensaje de espera) mientras el hilo secundario procesa la tarea. `join()` bloquea el hilo principal hasta que el secundario termina, garantizando que no se pierda trabajo.
