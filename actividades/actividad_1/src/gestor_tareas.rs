@@ -2,7 +2,7 @@
 pub const CANTIDAD_MAXIMA_TAREAS: u32 = 10;
 
 /// Representa los posibles estados de una tarea dentro del sistema.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EstadoTarea {
     /// La tarea está pendiente de ser realizada.
     Pendiente,
@@ -16,7 +16,7 @@ pub enum EstadoTarea {
 
 
 /// Representa una tarea con un identificador, una descripción y un estado.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Tarea {
     /// Identificador único de la tarea.
     id: u32,
@@ -99,4 +99,69 @@ pub fn gestionar_contador_tareas() {
     println!("Capacidad del sistema: {} tareas", limite_tareas);
     tareas_procesadas += 1; // simulo el procesamiento de 1 tarea
     println!("Tareas procesadas actualmente: {}", tareas_procesadas);
+}
+
+/// Representa una gestor de tareas con un vector de tareas
+#[derive(Debug)]
+pub struct GestorDeTareas {
+    /// Vector de Tareas
+    tareas: Vec<Tarea>
+}
+
+impl GestorDeTareas {
+
+    /// Crea un gestor de tareas vacío
+    pub fn nuevo() -> Self {
+        GestorDeTareas {
+            tareas: Vec::new()
+        }
+    }
+
+    /// Agrega una tarea al gestor
+    pub fn agregar(&mut self, tarea: Tarea) {
+        self.tareas.push(tarea)
+    }
+
+    /// Busca una tarea por ID. 
+    /// Devuelve 'Option<&Tarea>' (prestado).
+    /// Si no existe, devuelve 'None'
+    pub fn buscar(&self, id: u32) -> Option<&Tarea> {
+        self.tareas.iter().find(|t| t.id == id)
+    }
+
+    /// Busca una tarea por ID.
+    /// Devuelve una copia 'Option<Tarea>'.
+    pub fn obtener_por_id(&self, id: u32) -> Option<Tarea> {
+        self.buscar(id).cloned()  //tuve que modificar Tarea para que se pueda clonar.
+    }
+
+    /// Busca una tarea por ID y la elimina del gestor.
+    /// Devuelve 'Option<Tarea>' (toma ownership de la tarea removida).
+    pub fn quitar(&mut self, id: u32) -> Option<Tarea> {
+        let pos = self.tareas.iter().position(|t| t.id == id);
+        pos.map(|i| self.tareas.remove(i))
+    }
+
+    /// Procesa una tarea por ID y devuelve `Result<(), String>`.
+    /// - Si la tarea existe y se puede procesar (estado Pendiente), ejecuta y devuelve Ok(()).
+    /// - Si la tarea existe pero ya está en otro estado, devuelve Err con un mensaje.
+    /// - Si no existe, devuelve Err.
+    pub fn procesar_por_id(&mut self, id: u32) -> Result<(), String> {
+        // Buscamos una referencia mutable a la tarea
+        let tarea = self.tareas.iter_mut().find(|t| t.id == id);
+        match tarea {
+            Some(t) => {
+                // Verificamos el estado actual. 
+                // En este caso convendría que el objeto Tarea tenga un metodo que 
+                // permita obtener su estado y no acceder directmente como se hace a continuacion
+                match t.estado {
+                    EstadoTarea::Pendiente => Ok(t.ejecutar()), //podriamos hacer directemente que 'ejecutar' retorne un Result.
+                    EstadoTarea::EnProgreso => Err("La tarea ya está en progreso".to_string()),
+                    EstadoTarea::Completada => Err("La tarea ya fue completada".to_string()),
+                    EstadoTarea::Fallida => Err("La tarea falló anteriormente".to_string()),
+                }
+            }
+            None => Err(format!("No se encontró la tarea con ID {}", id)),
+        }
+    }
 }
