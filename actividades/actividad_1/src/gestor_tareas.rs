@@ -93,7 +93,7 @@ impl Procesable for Tarea {
 /// Inicializa y actualiza un contador de tareas procesadas, demostrando el uso de variables mutables e inmutables.
 pub fn gestionar_contador_tareas() {
     // Variable inmutable --> no se puede modificar después de su inicialización
-    let limite_tareas: u32 = CANTIDAD_MAXIMA_TAREAS; 
+    let limite_tareas: u32 = CANTIDAD_MAXIMA_TAREAS;
     // Variable mutable --> se puede modificar después de su inicialización
     let mut tareas_procesadas: u32 = 0;
     println!("Capacidad del sistema: {} tareas", limite_tareas);
@@ -122,7 +122,7 @@ impl GestorDeTareas {
         self.tareas.push(tarea)
     }
 
-    /// Busca una tarea por ID. 
+    /// Busca una tarea por ID.
     /// Devuelve 'Option<&Tarea>' (prestado).
     /// Si no existe, devuelve 'None'
     pub fn buscar(&self, id: u32) -> Option<&Tarea> {
@@ -151,8 +151,8 @@ impl GestorDeTareas {
         let tarea = self.tareas.iter_mut().find(|t| t.id == id);
         match tarea {
             Some(t) => {
-                // Verificamos el estado actual. 
-                // En este caso convendría que el objeto Tarea tenga un metodo que 
+                // Verificamos el estado actual.
+                // En este caso convendría que el objeto Tarea tenga un metodo que
                 // permita obtener su estado y no acceder directmente como se hace a continuacion
                 match t.estado {
                     EstadoTarea::Pendiente => Ok(t.ejecutar()), //podriamos hacer directemente que 'ejecutar' retorne un Result.
@@ -163,5 +163,37 @@ impl GestorDeTareas {
             }
             None => Err(format!("No se encontró la tarea con ID {}", id)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nueva_tarea_comienza_en_estado_pendiente() {
+        let tarea = Tarea::nueva(1, String::from("Test"));
+        assert!(matches!(tarea.estado, EstadoTarea::Pendiente));
+    }
+
+    #[test]
+    fn procesar_tarea_pendiente_devuelve_ok() {
+        let mut gestor = GestorDeTareas::nuevo();
+        gestor.agregar(Tarea::nueva(1, String::from("Test")));
+        assert!(gestor.procesar_por_id(1).is_ok());
+    }
+
+    #[test]
+    fn procesar_tarea_ya_completada_devuelve_err() {
+        let mut gestor = GestorDeTareas::nuevo();
+        gestor.agregar(Tarea::nueva(1, String::from("Test")));
+        gestor.procesar_por_id(1).unwrap();
+        assert!(gestor.procesar_por_id(1).is_err());
+    }
+
+    #[test]
+    fn procesar_tarea_inexistente_devuelve_err() {
+        let mut gestor = GestorDeTareas::nuevo();
+        assert!(gestor.procesar_por_id(99).is_err());
     }
 }
