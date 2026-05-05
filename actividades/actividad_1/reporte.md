@@ -13,52 +13,20 @@ Una de las caracteristicas principales de Rust es que es el hecho de priorizar l
 - Permitir una mejor performance del compilador al darle la certeza de que ciertos valores no cambiaran (inmutables)
 - Codigo mas facil de entender al saber que las variables a lo largo de la ejecucion del programa no van a cambiar su valor
 
-A continuacion vamos a ver 2 ejemplos donde se detalla el funcionamiento de la mutabilidad/inmutabilidad de las variables en Rust:
+En el ejemplo *variables_funciones.rs* tomamos el siguiente extracto de codigo:
 
-- **Ejemplo 1**: En el ejemplo *variables_funciones.rs* tomamos el siguiente extracto de codigo:
+```rust
+/// Inicializa y actualiza un contador de tareas procesadas, demostrando el uso de variables mutables e inmutables.
+pub fn gestionar_contador_tareas() {
+    let limite_tareas: u32 = CANTIDAD_MAXIMA_TAREAS; // Variable inmutable
+    let mut tareas_procesadas: u32 = 0; // Variable mutable
+    println!("Capacidad del sistema: {} tareas", limite_tareas);
+    tareas_procesadas += 1; // Simulamos procesamiento de una tarea
+    println!("Tareas procesadas actualmente: {}", tareas_procesadas);
+}
+```
 
-    ```rust
-    /// Inicializa y actualiza un contador de tareas procesadas, demostrando el uso de variables mutables e inmutables.
-    pub fn gestionar_contador_tareas() {
-        let limite_tareas: u32 = CANTIDAD_MAXIMA_TAREAS; // Variable inmutable
-        let mut tareas_procesadas: u32 = 0; // Variable mutable
-        println!("Capacidad del sistema: {} tareas", limite_tareas);
-        tareas_procesadas += 1; // Simulamos procesamiento de una tarea
-        println!("Tareas procesadas actualmente: {}", tareas_procesadas);
-    }
-    ```
-
-    Vemos que la variable `limite_tareas` es **inmutable** ya que representa un valor constante que no cambiara a lo largo de la ejecucion del programa, por lo tanto le da mayor seguridad al compilador permitiendo optimizaciones sobre la variable, mientras que `tareas_procesadas` es **mutable** porque su valor se va a ir actualizando a medida que se procesen las tareas permitiendo asi actualizaciones controladas y tambien seguras ya que el compilador se asegura de que solo se modifique a traves de operaciones explicitas (como el `+=`) y no de forma accidental.
-
-- **Ejemplo 2**: Viendo otro ejemplo en codigo un poco mas complejo tenemos el siguiente extacto de codigo en  *tarea.rs* al definir el struct `Tarea` y sus distintos metodos, por ejemplo el `iniciar()`
-
-    ```rust
-    pub struct Tarea {
-        id: u32,
-        descripcion: String,
-        estado: EstadoTarea,
-    }
-
-    impl Tarea {
-        /// Metodo constructor crear nueva tarea
-        pub fn nueva(id: u32, descripcion: String) -> Self {
-            Tarea {
-                id,
-                descripcion,
-                estado: EstadoTarea::Pendiente,
-            }
-        }
-
-        /// Metodo para iniciar la tarea
-        pub fn iniciar(&mut self) {
-            self.estado = EstadoTarea::EnProgreso;
-        }
-        ...
-        ...
-    }
-    ```
-
-    El metodo `iniciar()` toma `&mut self` como parametro ya que justamente necesita modificar el estado interno de la tarea para cambiarlo a `EnProgreso`, por lo tanto es necesario que el metodo tenga acceso mutable a `self` para poder modificarlo. En otras palabras le tenemos que marcar explicitamente al compilador que el metodo va a poder modificar el estado interno de la tarea para garantizar un acceso seguro y controlado a memoria.
+Vemos que la variable `limite_tareas` es **inmutable** ya que representa un valor constante que no cambiara a lo largo de la ejecucion del programa, por lo tanto le da mayor seguridad al compilador permitiendo optimizaciones sobre la variable, mientras que `tareas_procesadas` es **mutable** porque su valor se va a ir actualizando a medida que se procesen las tareas permitiendo asi actualizaciones controladas y tambien seguras ya que el compilador se asegura de que solo se modifique a traves de operaciones explicitas (como el `+=`) y no de forma accidental.
 
 Otro de los aspectos fundamentales de la inmutabilidad de Rust es que es fundamental para la **CONCURRENCIA** al no permitir justamente que varias partes del programa modifiquen el mismo estado al mismo tiempo evitando las **Race Conditions** por tanto Rust requiere que los datos compartidos por varios hilos sean inmutables o esten protegidos mediante `Mutex` o `Locks` por ejemplo.
 
@@ -130,7 +98,121 @@ Por ejemplo si la descricion de la tarea es "Comprar alimentos", lo que se almac
 - En **Stack**: Se almacena un puntero a la ubicacion en el Heap donde se encuentra "Comprar alimentos", junto con su longitud (17 bytes) y capacidad (17 bytes)
 
 ### 2. Modelado de Datos y Conocimiento
-EN DESARROLLO...
+
+#### <u>Structs y Metodos</u>
+
+Implementamos el siguiente struct `Tarea` en *tarea.rs* con los siguientes campos detallados:
+
+```rust
+pub struct Tarea {
+    /// Identificador único de la tarea.
+    id: u32,
+    /// Descripción detallada de la tarea.
+    descripcion: String,
+    /// Estado actual de la tarea, representado por el enum EstadoTarea.
+    estado: EstadoTarea,
+}
+```
+
+Y a continuacion implementamos como ejemplo el siguiente metodo asociado a la tarea con la palabra reservada `impl` donde le definimos entre otros el siguiente metodo:
+
+```rust
+impl Tarea {
+    /// Método para crear una nueva tarea con un identificador y una descripción, y establecer el estado inicial como Pendiente
+    pub fn nueva(id: u32, descripcion: String) -> Self {
+        Tarea {
+            id,
+            descripcion,
+            estado: EstadoTarea::Pendiente, // la tarea comienza por defecto en estado Pendiente
+        }
+    }
+
+    /// Marca la tarea como en progreso.
+    pub fn iniciar(&mut self) {
+        self.estado = EstadoTarea::EnProgreso;
+    }
+    ...
+    ...
+}
+```
+
+En este ultimo segmento de codigo definimos con la palabra reservada `impl` algunos metodos de la struct `Tarea` donde entre ellos esta `nueva()` (que seria el constructor) y `iniciar()` (que seria justamente para iniciar la tarea y cambiar su estado a *EnProgreso*)
+
+#### <u>Enums y Pattern Matching</u>
+
+El enum que implementamos para las distintas tareas se encuentra en *estado_tarea.rs*, donde se detalla todos los estados por el que puede pasar una tarea:
+
+```rust
+pub enum EstadoTarea {
+    /// La tarea está pendiente de ser realizada.
+    Pendiente,
+    /// La tarea está actualmente en progreso.
+    EnProgreso,
+    /// La tarea ha sido completada.
+    Completada,
+    /// La tarea ha fallado o no se pudo completar.
+    Fallida,
+}
+```
+
+Por otro lado la funcion que implementamos para tomar una tarea y segun su estado llevar a cabo distintas acciones (mediante **pattern matching**) es la siguiente que se encuentra en *gestor_tareas.rs*:
+
+```rust
+pub fn procesar_por_id(&mut self, id: u32) -> Result<(), String> {
+    // Buscamos la tarea que coincida con la ID
+    let tarea = self
+        .tareas
+        .iter_mut()
+        .find(|tarea| tarea.coincide_con_id(id));
+    // Primer pattern matching por si efectivamente obtenemos una tarea dada la ID o None
+    match tarea {
+        Some(tarea) => {
+            // Segundo pattern matching por si se encontro la tarea entonces evaluamos su estado
+            match tarea.obtener_estado() {
+                EstadoTarea::Pendiente => {
+                    tarea.ejecutar();
+                    Ok(())
+                }
+                EstadoTarea::EnProgreso => Err("La tarea ya está en progreso".to_string()),
+                EstadoTarea::Completada => Err("La tarea ya fue completada".to_string()),
+                EstadoTarea::Fallida => Err("La tarea falló anteriormente".to_string()),
+            }
+        }
+        None => Err(format!("No se encontró la tarea con ID {}", id)),
+    }
+}
+```
+
+Es decir, viendo el ultimo segmento de codigo logramos mediante pattern matching identificar si una tarea existe o no, y en caso de que exista entonces que logica se llevaria a cabo dependiendo de su estado interno. En caso de que el estado de la tarea sea *EnProgreso* entonces ejecutarla
+
+#### <u>Traits</u>
+
+Definimos el siguiente trait `Procesable` donde internamente se implementa el metodo `ejectar()` en *procesable.rs*:
+
+```rust
+/// Define un comportamiento común para las tareas que pueden ser procesadas.
+pub trait Procesable {
+    fn ejecutar(&mut self); // &mut self porque el método ejecutar modificará el estado de la tarea
+}
+```
+
+Lo que hace `ejecutar()` es recibir una tarea como estado mutable para justamente modificar su estado interno
+
+Luego implementamos dicho Trait `Procesable` al struct `Tarea` en *tarea.rs* donde detallamos la logica del metodo `ejecutar()` para las tareas que recibe.
+
+```rust
+// Definimos el Trait 'Procesable' para Tarea que vendria a funcionar como una interfaz en otros lenguajes como en Go
+impl Procesable for Tarea {
+    /// Método para ejecutar la tarea, cambiando su estado a EnProgreso y luego a Completada
+    fn ejecutar(&mut self) {
+        self.iniciar(); // Metodo que cambia su estado a EnProgreso
+        println!("Procesando la tarea '{}'", self.descripcion);
+        self.completar(); // Metodo que cambia su estado a Completada
+    }
+}
+```
+
+Una de las particularidades de Rust es que implementa Traits en lugar de herencia clasica de objetos. Esto es porque la herencia clasica se lleva a cabo una jerarquia muy rigida de clases por tanto un cambio accidental de una clase podria romper todas las demas subclases. Es por ello que existen los Traits (conocido como interfaces en otros lenguajes) que sirven basicamente para **implementar comportamientos** especificos a cada una de las clases. Por ejemplo nosotros en este caso implementamos el trait `Procesable` e internamente el metodo `ejecutar()` donde luego le definimos ese mismo trait al struct Tarea, sin embargo a futuro podriamos implementar el mismo trait con el mismo metodo a otro struct, por ejemplo imaginando que tenemos un struct `Accion` o `Calculo`
 
 ### 3. Seguridad y manejo de errores
 
