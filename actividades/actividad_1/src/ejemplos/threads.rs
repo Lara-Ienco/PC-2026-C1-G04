@@ -1,26 +1,17 @@
 use std::thread;
 
-/// Representa una tarea con un identificador, una descripción y un estado.
+/// Representa una tarea con un identificador y una descripción.
 pub struct Tarea {
     /// Identificador único de la tarea.
     id: u32,
     /// Descripción detallada de la tarea.
     descripcion: String,
-    /// Estado actual de la tarea, representado por el enum EstadoTarea.
-    estado: EstadoTarea,
 }
 
-/// Define un comportamiento común para las tareas que pueden ser procesadas.
-pub trait Procesable {
-    fn ejecutar(&mut self); // &mut self porque el método ejecutar modificará el estado de la tarea
-}
-
-impl Procesable for Tarea {
-    /// Método para ejecutar la tarea, cambiando su estado a EnProgreso y luego a Completada
-    fn ejecutar(&mut self) {
-        self.iniciar(); // cambio el estado a EnProgreso
+impl Tarea {
+    /// Método para ejecutar la tarea.
+    fn ejecutar(&self) {
         println!("Procesando la tarea '{}'", self.descripcion);
-        self.completar(); // cambio el estado a Completada
     }
 }
 
