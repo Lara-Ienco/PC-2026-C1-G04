@@ -1,133 +1,115 @@
-use std::sync::{Arc, Mutex, Condvar}; // Arc para compatir el Mutex entre hilos y variable de condicion
-use std::collections::VecDeque; // Estructura del buffer
-use std::thread; // Para crear hilos de la lib estandar
-use rand::Rng; // Para generar num random
+use rand::random_range;
+use std::{
+    collections::VecDeque,       // Estructura del buffer
+    sync::{Arc, Condvar, Mutex}, // Estructuras de sincronización
+    thread::spawn,
+};
 
 const CAPACIDAD: usize = 5; // Capacidad del buffer
+const NUMEROS: u8 = 20; // Cantidad de elementos a procesar
+const CONSUMIDORES: u8 = 2; // Cantidad de consumidores
+const MIN: usize = 1; // Número random mínimo
+const MAX: usize = 100; // Número random máximo
 
-// -----------IMPLEMENTACION SEMAFORO-------------
-struct Semaforo {
-  valor: Mutex<usize>, // Valor del semaforo protegido en Mutex para que las operaciones p(S) y v(S) sean atomicas
-  condvar: Condvar,
-}
+fn producir(par: &Arc<(Mutex<VecDeque<usize>>, Condvar)>) -> Result<(), String> {
+    let buffer = &par.0;
+    let condvar = &par.1;
 
-impl Semaforo {
-
-  // Constructor del semaforo
-  fn new(valor_inicial: usize) -> Self {
-    Semaforo {
-      valor: Mutex::new(valor_inicial),
-      condvar: Condvar::new(),
-    }
-  }
-
-  // Operacion ATOMICA p(S) = wait(S)
-  fn wait(&self) {
-    // Tomamos valor del semaforo protegido en Mutex para que sea todo ATOMICO
-    let mut valor = self.valor.lock().unwrap();
-    // Si el valor del semaforo es 0 entonces el proceso/hilo queda bloqueado en la lista de espera L del semaforo
-      while *valor == 0 {
-        valor = self.condvar.wait(valor).unwrap();
-      }
-      // Si no decrementamos el valor del semaforo
-      *valor -= 1;
-  }
-
-  // Operacion ATOMICA v(S) = signal(S)
-  fn signal(&self) {
-    // Tomamos valor del semaforo protegido en Mutex para que sea todo ATOMICO
-    let mut valor = self.valor.lock().unwrap();
-    // Incrementamos el valor del semaforo +1
-    *valor += 1;
-    // Desperamos a un proceso random en la lista de espera L del semaforo
-    self.condvar.notify_one();
-  }
-}
-
-
-// ------------MAIN---------------
-fn main(){
-  // Estado inicial semaforos (mutex, espacios, items)
-  let sem_mutex = Arc::new(Semaforo::new(1));
-  let sem_espacios = Arc::new(Semaforo::new(CAPACIDAD));
-  let sem_items = Arc::new(Semaforo::new(0));
-
-  // Buffer protegido por Mutex
-  let buffer = Arc::new(Mutex::new(VecDeque::<u32>::new()));
-
-  // Para agregar hilos
-  let mut handles = vec![];
-
-  // ------------PRODUCTOR (1)------------
-  // Semaforos del productor + buffer
-  let mutex_prod = Arc::clone(&sem_mutex);
-  let espacios_prod = Arc::clone(&sem_espacios);
-  let items_prod = Arc::clone(&sem_items);
-  let buffer_prod = Arc::clone(&buffer);
-
-  // Hilo productor
-  let productor = thread::spawn(move || {
     // Productor genera 20 numeros aleatorios [1,100]
-    for _ in 0..=20 {
-      let numero_random = rand::thread_rng().gen_range(1..=100);
-      espacios_prod.wait(); // Productor hace p(sem_espacios) para consultar si hay espacio en el buffer sino queda bloqueado
-      mutex_prod.wait(); // Productor hace p(sem_mutex) para acceder a la zona critica del buffer
+    for _ in 0..NUMEROS {
+        // Se genera un numero aleatorio del 1 al 100
+        let numero_random = random_range(MIN..=MAX);
 
-      // Solicitamos el mutex del buffer y agregamos al buffer el item generado
-      let mut buf = buffer_prod.lock().unwrap();
-      buf.push_back(numero_random);
-      println!("Productor: Genere {}", numero_random);
-      drop(buf);
+        // Se espera a que haya espacio en el buffer
+        let mut buffer = condvar
+            .wait_while(
+                buffer.lock().map_err(|error| error.to_string())?,
+                |buffer| buffer.len() >= CAPACIDAD,
+            )
+            .map_err(|error| error.to_string())?;
 
-      mutex_prod.signal(); // Productor hace v(sem_mutex) para salir de la zona critica del buffer y comunicarselo a los demas
-      items_prod.signal(); // Productor hace v(sem_items) para comunicar que hay un item mas en el buffer
+        // Se inserta el número
+        buffer.push_back(numero_random);
+
+        // Se libera el lock
+        drop(buffer);
+
+        println!("[PRODUCTOR] Genere {numero_random}");
+
+        // No es necesario notificar a todos al tener un solo productor
+        condvar.notify_one();
     }
+    println!("[PRODUCTOR] Termine de generar números aleatorios");
+    Ok(())
+}
 
-    println!("Productor: Termine de generar numeros aleatorios");
-  });
-  handles.push(productor);
+fn consumir(id: u8, par: &Arc<(Mutex<VecDeque<usize>>, Condvar)>) -> Result<(), String> {
+    let buffer = &par.0;
+    let condvar = &par.1;
 
+    let mut numeros_procesados: u8 = 0;
 
-  // -----------CONSUMIDORES (2)--------------
-  for id in 1..=2 {
-    // Semaforos de consumidor + buffer
-    let mutex_cons = Arc::clone(&sem_mutex);
-    let espacios_cons = Arc::clone(&sem_espacios);
-    let items_cons = Arc::clone(&sem_items);
-    let buffer_cons = Arc::clone(&buffer);
+    // Si el consumidor proceso la mitad de items generados entonces termina su parte
+    while numeros_procesados < NUMEROS / CONSUMIDORES {
+        // Se espera a que haya elementos en el buffer
+        let mut buffer = condvar
+            .wait_while(
+                buffer.lock().map_err(|error| error.to_string())?,
+                |buffer| buffer.is_empty(),
+            )
+            .map_err(|error| error.to_string())?;
 
-    // Hilo consumidor
-    let consumidor = thread::spawn(move || {
-      let mut numeros_procesados = 0u32;
+        // Se obtiene un número del buffer
+        let numero = buffer.pop_front().ok_or("No hay nada en el buffer")?;
 
-      loop {
-        items_cons.wait(); // Consumidor hace p(sem_items) para consultar si hay items en el buffer sino queda bloqueado
-        mutex_cons.wait(); // Consumidor hace p(sem_mutex) para acceder a la zona critica del buffer
+        // Se libera el lock
+        drop(buffer);
 
-        // Solicitamos el mutex del buffer y consumimos un item del buffer
-        let mut buf = buffer_cons.lock().unwrap();
-        let numero = buf.pop_front().unwrap();
-        println!("Consumidor {}: Procese {}", id, numero);
-        drop(buf);
-
-        mutex_cons.signal(); // Consumidor hace v(sem_mutex) para salir de la zona critica del buffer y comunicarselo a los demas
-        espacios_cons.signal(); // Consumidor hace v(sem_espacios) para comunicar que hay un espacio libre en el buffer
-
-        // Si el consumidor proceso la mitad de items generados entonces termina su parte
+        println!("[CONSUMIDOR {id}] Procese {numero}");
         numeros_procesados += 1;
-        if numeros_procesados == 20/2 {
-          println!("Consumidor {}: Termine mi trabajo", id);
-          break;
+
+        // Se notifica a todos para asegurar que se notifique al productor
+        condvar.notify_all();
+    }
+    println!("[CONSUMIDOR {id}] Termine mi trabajo");
+    Ok(())
+}
+
+fn main() {
+    // Estado inicial
+    let buffer = Mutex::new(VecDeque::new());
+    let condvar = Condvar::new();
+    let par = Arc::new((buffer, condvar));
+
+    // Para agregar hilos
+    let mut handles = vec![];
+
+    let par_productor = par.clone();
+
+    // Hilo productor
+    let productor = spawn(move || {
+        if let Err(error) = producir(&par_productor) {
+            eprintln!("[PRODUCTOR] {error}");
         }
-      }
     });
-    handles.push(consumidor);
-  }
+    handles.push(productor);
 
-  // Hilo principal espera a los 3 hilos (1 productor y 2 consumidores)
-  for hilo in handles {
-    hilo.join().unwrap();
-  }
+    for id in 1..=CONSUMIDORES {
+        let par = par.clone();
 
-  println!("Fin de ejecucion.")
+        // Hilo consumidor
+        let consumidor = spawn(move || {
+            if let Err(error) = consumir(id, &par) {
+                eprintln!("[CONSUMIDOR {id}] {error}");
+            }
+        });
+        handles.push(consumidor);
+    }
+    // Hilo principal espera a los 3 hilos (1 productor y 2 consumidores)
+    for hilo in handles {
+        if hilo.join().is_err() {
+            eprintln!("[PRINCIPAL] Error al hacer join");
+        }
+    }
+    println!("[PRINCIPAL] Fin de ejecución");
 }
