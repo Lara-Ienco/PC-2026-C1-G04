@@ -1,0 +1,1 @@
+/home/rings/Escritorio/PG-2026-C1-G04/actividades/actividad_5/productor_consumidor/target/debug/actividad_5: /home/rings/Escritorio/PG-2026-C1-G04/actividades/actividad_5/productor_consumidor/src/main.rs
