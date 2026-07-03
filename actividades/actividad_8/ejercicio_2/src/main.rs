@@ -1,19 +1,18 @@
 use rand::random_range;
-use std::collections::HashMap;
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    sync::mpsc::{Receiver, Sender, channel},
+    thread::{sleep, spawn},
+    time::{Duration, Instant},
+};
 
 // --- CONSTANTES DEL SISTEMA ---
-const MAX_TIME: Duration = Duration::from_secs(8);
-const INTERVAL_NORMAL: Duration = Duration::from_millis(500);
-const INTERVAL_LENTO: Duration = Duration::from_millis(1200);
-
-// Constantes de Monitoreo
-const TIMEOUT_RECV: Duration = Duration::from_millis(50);
-const UBRAL_LENTITUD: Duration = Duration::from_millis(1000);
-const TIMEOUT_SOSPECHOSO: Duration = Duration::from_millis(1500);
-const TIMEOUT_CAIDO: Duration = Duration::from_millis(3000);
+const TOTAL_TIME: Duration = Duration::from_secs(8);
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+const SLOW_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(1200);
+const SLOW_TIME: Duration = Duration::from_secs(3);
+const MIN_CRASH_TIME: u64 = 2000;
+const MAX_CRASH_TIME: u64 = 4000;
 
 /// Estados posibles de un nodo
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -31,192 +30,201 @@ struct InfoNodo {
     tiempo_caida: Option<Duration>,
 }
 
-fn main() {
+impl InfoNodo {
+    const fn new(inicio: Instant) -> Self {
+        Self {
+            estado: EstadoNodo::Activo,
+            ultimo_heartbeat: inicio,
+            tuvo_lentitud: false,
+            tiempo_caida: None,
+        }
+    }
+}
+
+fn nodo_normal(id: i32, tx: &Sender<i32>) {
+    loop {
+        sleep(HEARTBEAT_INTERVAL);
+
+        if tx.send(id).is_err() {
+            break;
+        }
+    }
+}
+
+fn nodo_lento(id: i32, tx: &Sender<i32>, inicio: Instant) {
+    while inicio.elapsed() < SLOW_TIME {
+        sleep(HEARTBEAT_INTERVAL);
+
+        if tx.send(id).is_err() {
+            break;
+        }
+    }
+    loop {
+        sleep(SLOW_HEARTBEAT_INTERVAL);
+
+        if tx.send(id).is_err() {
+            break;
+        }
+    }
+}
+
+fn nodo_crash(id: i32, tx: &Sender<i32>, inicio: Instant) {
+    let crash_time = Duration::from_millis(random_range(MIN_CRASH_TIME..=MAX_CRASH_TIME));
+
+    while inicio.elapsed() < crash_time {
+        sleep(HEARTBEAT_INTERVAL);
+
+        if tx.send(id).is_err() {
+            break;
+        }
+    }
+}
+
+fn spawn_nodos(tx: &Sender<i32>) -> Instant {
     let inicio = Instant::now();
-    let (tx, rx) = mpsc::channel();
 
-    // Spawn de nodos
-
-    // Nodo 1: normal (500ms, siempre)
     let tx1 = tx.clone();
-
-    thread::spawn(move || {
-        loop {
-            thread::sleep(Duration::from_millis(500));
-            if tx1.send(1).is_err() {
-                break;
-            }
-        }
+    spawn(move || {
+        nodo_normal(1, &tx1);
     });
 
-    // Nodo 2: se vuelve lento después de 3s (heartbeat cada 1200ms)
     let tx2 = tx.clone();
-    thread::spawn(move || {
-        loop {
-            let elapsed = inicio.elapsed();
-            let delay = if elapsed >= Duration::from_secs(3) && elapsed < Duration::from_secs(6) {
-                LENTITUD
-            } else {
-                INTERVAL_TIME
-            };
-            thread::sleep(delay);
-            if tx2.send(2).is_err() {
-                break;
-            }
-        }
+    spawn(move || {
+        nodo_lento(2, &tx2, inicio);
     });
 
-    // Nodo 3: muere después de un tiempo aleatorio entre 2 y 4 segundos
     let tx3 = tx.clone();
-    let lifetime = Duration::from_millis(random_range(2000..=4000));
-    thread::spawn(move || {
-        let start_nodo3 = Instant::now();
-        while start_nodo3.elapsed() < lifetime {
-            thread::sleep(INTERVAL_TIME);
-            if start_nodo3.elapsed() >= lifetime {
-                break;
-            }
-            if tx3.send(3).is_err() {
-                break;
+    spawn(move || {
+        nodo_crash(3, &tx3, inicio);
+    });
+    inicio
+}
+
+fn recv_heartbeats(
+    rx: &Receiver<i32>,
+    timeout: Duration,
+    inicio: Instant,
+    info_nodos: &mut HashMap<i32, InfoNodo>,
+) {
+    if let Ok(id) = rx.recv_timeout(timeout) {
+        let now = Instant::now();
+        let elapsed_total = now.duration_since(inicio).as_secs_f32();
+
+        if let Some(info) = info_nodos.get_mut(&id) {
+            let elapsed_desde_ultimo = now.duration_since(info.ultimo_heartbeat);
+
+            if elapsed_desde_ultimo > 2 * HEARTBEAT_INTERVAL {
+                info.tuvo_lentitud = true;
+                info.estado = EstadoNodo::Sospechoso;
+                info.ultimo_heartbeat = now;
+                println!(
+                    "[{elapsed_total:.1}s] Monitor: Nodo {id} heartbeat tardío ({:.1}s). Estado: SOSPECHOSO",
+                    elapsed_desde_ultimo.as_secs_f32()
+                );
+            } else {
+                let anterior_estado = info.estado;
+                info.estado = EstadoNodo::Activo;
+                info.ultimo_heartbeat = now;
+
+                if anterior_estado == EstadoNodo::Sospechoso || anterior_estado == EstadoNodo::Caido
+                {
+                    println!(
+                        "[{elapsed_total:.1}s] Monitor: heartbeat de Nodo {id}. Estado: ACTIVO (recuperado)",
+                    );
+                } else {
+                    println!(
+                        "[{elapsed_total:.1}s] Monitor: heartbeat de Nodo {id}. Estado: ACTIVO",
+                    );
+                }
             }
         }
-    });
+    }
+}
 
-    drop(tx);
-    // Monitor
-    let limit = MAX_TIME;
+fn chequear_ultimos_heartbeats(inicio: Instant, info_nodos: &mut HashMap<i32, InfoNodo>) {
+    let now = Instant::now();
+    let elapsed_total = now.duration_since(inicio);
 
+    for (&id, info) in info_nodos {
+        let elapsed_desde_ultimo = now.duration_since(info.ultimo_heartbeat);
+
+        if elapsed_desde_ultimo >= 3 * HEARTBEAT_INTERVAL {
+            info.estado = EstadoNodo::Caido;
+
+            if info.tiempo_caida.is_none() {
+                info.tiempo_caida = Some(elapsed_total);
+            }
+            println!(
+                "[{:.1}s] Monitor: Nodo {} sin heartbeat hace {:.1}s. Estado: CAÍDO",
+                elapsed_total.as_secs_f32(),
+                id,
+                elapsed_desde_ultimo.as_secs_f32()
+            );
+        } else if elapsed_desde_ultimo >= 2 * HEARTBEAT_INTERVAL {
+            info.estado = EstadoNodo::Sospechoso;
+            println!(
+                "[{:.1}s] Monitor: Nodo {} sin heartbeat hace {:.1}s. Estado: SOSPECHOSO",
+                elapsed_total.as_secs_f32(),
+                id,
+                elapsed_desde_ultimo.as_secs_f32()
+            );
+        }
+    }
+}
+
+fn bucle_monitoreo(rx: &Receiver<i32>, inicio: Instant) -> HashMap<i32, InfoNodo> {
     let mut info_nodos = HashMap::new();
+
     for id in 1..=3 {
-        info_nodos.insert(
-            id,
-            InfoNodo {
-                estado: EstadoNodo::Activo,
-                ultimo_heartbeat: Instant::now(),
-                tuvo_lentitud: false,
-                tiempo_caida: None,
-            },
-        );
+        info_nodos.insert(id, InfoNodo::new(inicio));
     }
     println!("***** Iniciando Monitoreo *****");
 
-    while inicio.elapsed() < limit {
+    loop {
         let elapsed = inicio.elapsed();
-        let remaining = limit.saturating_sub(elapsed);
-        if remaining.is_zero() {
+        let Some(remaining) = TOTAL_TIME.checked_sub(elapsed) else {
             break;
-        }
+        };
+        let recv_timeout_duration = HEARTBEAT_INTERVAL.min(remaining);
 
-        // usamos un timeout corto de 50ms para evaluar los timeouts y no bloquear
-        let recv_timeout_duration = Duration::from_millis(50).min(remaining);
-        match rx.recv_timeout(recv_timeout_duration) {
-            Ok(id) => {
-                let now = Instant::now();
-                let elapsed_total = now.duration_since(inicio).as_secs_f32();
-                if let Some(info) = info_nodos.get_mut(&id) {
-                    let elapsed_desde_ultimo = now.duration_since(info.ultimo_heartbeat);
-
-                    // consideramos latido tardio si tardó más de 1.0 segundos (lo normal es ~500ms) !!
-                    let es_tardio = elapsed_desde_ultimo > Duration::from_millis(1000);
-
-                    if es_tardio {
-                        info.tuvo_lentitud = true;
-                        info.estado = EstadoNodo::Sospechoso;
-                        info.ultimo_heartbeat = now;
-                        println!(
-                            "[{:.1}s] Monitor: Nodo {} heartbeat tardío ({:.1}s). Estado: SOSPECHOSO",
-                            elapsed_total, id, elapsed_desde_ultimo.as_secs_f32()
-                        );
-                    } else {
-                        let anterior_estado = info.estado;
-                        info.estado = EstadoNodo::Activo;
-                        info.ultimo_heartbeat = now;
-
-                        if anterior_estado == EstadoNodo::Sospechoso || anterior_estado == EstadoNodo::Caido {
-                            println!(
-                                "[{:.1}s] Monitor: heartbeat de Nodo {}. Estado: ACTIVO (recuperado)",
-                                elapsed_total, id
-                            );
-                        } else {
-                            println!(
-                                "[{:.1}s] Monitor: heartbeat de Nodo {}. Estado: ACTIVO",
-                                elapsed_total, id
-                            );
-                        }
-                    }
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // si hay timeout seguimos chequeando y esperando
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // si se desconectan los nodos, salimos
-                break;
-            }
-        }
-
-        // Evaluar timeouts periódicamente
-        let now = Instant::now();
-        let elapsed_total = now.duration_since(inicio);
-        for (&id, info) in info_nodos.iter_mut() {
-            let elapsed_desde_ultimo = now.duration_since(info.ultimo_heartbeat);
-            match info.estado {
-                EstadoNodo::Activo => {
-                    if elapsed_desde_ultimo >= Duration::from_millis(1500) {
-                        info.estado = EstadoNodo::Sospechoso;
-                        println!(
-                            "[{:.1}s] Monitor: Nodo {} sin heartbeat hace {:.1}s. Estado: SOSPECHOSO",
-                            elapsed_total.as_secs_f32(), id, elapsed_desde_ultimo.as_secs_f32()
-                        );
-                    }
-                }
-                EstadoNodo::Sospechoso => {
-                    if elapsed_desde_ultimo >= Duration::from_millis(3000) {
-                        info.estado = EstadoNodo::Caido;
-                        info.tiempo_caida = Some(elapsed_total);
-                        println!(
-                            "[{:.1}s] Monitor: Nodo {} sin heartbeat hace {:.1}s. Estado: CAÍDO",
-                            elapsed_total.as_secs_f32(), id, elapsed_desde_ultimo.as_secs_f32()
-                        );
-                    }
-                }
-                EstadoNodo::Caido => {}
-            }
-        }
+        recv_heartbeats(rx, recv_timeout_duration, inicio, &mut info_nodos);
+        chequear_ultimos_heartbeats(inicio, &mut info_nodos);
     }
 
-    //Reporte final
+    info_nodos
+}
+
+fn reporte_final(info_nodos: &HashMap<i32, InfoNodo>) {
     println!("\n**** Reporte final (8s) ****");
     let now = Instant::now();
+
     for id in 1..=3 {
         if let Some(info) = info_nodos.get(&id) {
             let hace_secs = now.duration_since(info.ultimo_heartbeat).as_secs_f32();
+
             match info.estado {
                 EstadoNodo::Activo => {
-                    let lentitud_str = if info.tuvo_lentitud {
-                        " — tuvo episodios de lentitud"
-                    } else {
-                        ""
-                    };
-                    println!(
-                        "Nodo {}: ACTIVO (último heartbeat hace {:.1}s){}",
-                        id, hace_secs, lentitud_str
-                    );
+                    println!("Nodo {id}: ACTIVO (último heartbeat hace {hace_secs:.1}s)",);
                 }
                 EstadoNodo::Sospechoso => {
                     println!(
-                        "Nodo {}: SOSPECHOSO (último heartbeat hace {:.1}s)",
-                        id, hace_secs
+                        "Nodo {id}: ACTIVO (último heartbeat hace {hace_secs:.1}s) — tuvo episodios de lentitud",
                     );
                 }
                 EstadoNodo::Caido => {
                     let t_caido = info.tiempo_caida.unwrap_or(Duration::ZERO).as_secs_f32();
                     println!(
-                        "Nodo {}: CAÍDO (último heartbeat hace {:.1}s) — declarado caído en t={:.1}s",
-                        id, hace_secs, t_caido
+                        "Nodo {id}: CAÍDO (último heartbeat hace {hace_secs:.1}s) — declarado caído en t={t_caido:.1}s",
                     );
                 }
             }
         }
     }
+}
+
+fn main() {
+    let (tx, rx) = channel();
+    let inicio = spawn_nodos(&tx);
+    let info_nodos = bucle_monitoreo(&rx, inicio);
+    reporte_final(&info_nodos);
 }
