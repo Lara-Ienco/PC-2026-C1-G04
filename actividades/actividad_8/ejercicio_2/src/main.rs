@@ -13,6 +13,8 @@ const SLOW_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(1200);
 const SLOW_TIME: Duration = Duration::from_secs(3);
 const MIN_CRASH_TIME: u64 = 2000;
 const MAX_CRASH_TIME: u64 = 4000;
+const TIMEOUTS_SOSPECHOSO: u32 = 2;
+const TIMEOUTS_CAIDO: u32 = 3;
 
 /// Estados posibles de un nodo
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -113,7 +115,7 @@ fn recv_heartbeats(
         if let Some(info) = info_nodos.get_mut(&id) {
             let elapsed_desde_ultimo = now.duration_since(info.ultimo_heartbeat);
 
-            if elapsed_desde_ultimo > 2 * HEARTBEAT_INTERVAL {
+            if elapsed_desde_ultimo > TIMEOUTS_SOSPECHOSO * HEARTBEAT_INTERVAL {
                 info.tuvo_lentitud = true;
                 info.estado = EstadoNodo::Sospechoso;
                 info.ultimo_heartbeat = now;
@@ -148,7 +150,7 @@ fn chequear_ultimos_heartbeats(inicio: Instant, info_nodos: &mut HashMap<i32, In
     for (&id, info) in info_nodos {
         let elapsed_desde_ultimo = now.duration_since(info.ultimo_heartbeat);
 
-        if elapsed_desde_ultimo >= 3 * HEARTBEAT_INTERVAL {
+        if elapsed_desde_ultimo >= TIMEOUTS_CAIDO * HEARTBEAT_INTERVAL {
             info.estado = EstadoNodo::Caido;
 
             if info.tiempo_caida.is_none() {
@@ -160,7 +162,7 @@ fn chequear_ultimos_heartbeats(inicio: Instant, info_nodos: &mut HashMap<i32, In
                 id,
                 elapsed_desde_ultimo.as_secs_f32()
             );
-        } else if elapsed_desde_ultimo >= 2 * HEARTBEAT_INTERVAL {
+        } else if elapsed_desde_ultimo >= TIMEOUTS_SOSPECHOSO * HEARTBEAT_INTERVAL {
             info.estado = EstadoNodo::Sospechoso;
             println!(
                 "[{:.1}s] Monitor: Nodo {} sin heartbeat hace {:.1}s. Estado: SOSPECHOSO",
@@ -203,13 +205,14 @@ fn reporte_final(info_nodos: &HashMap<i32, InfoNodo>) {
             let hace_secs = now.duration_since(info.ultimo_heartbeat).as_secs_f32();
 
             match info.estado {
-                EstadoNodo::Activo => {
-                    println!("Nodo {id}: ACTIVO (último heartbeat hace {hace_secs:.1}s)",);
-                }
-                EstadoNodo::Sospechoso => {
-                    println!(
-                        "Nodo {id}: ACTIVO (último heartbeat hace {hace_secs:.1}s) — tuvo episodios de lentitud",
-                    );
+                EstadoNodo::Activo | EstadoNodo::Sospechoso => {
+                    if info.tuvo_lentitud {
+                        println!(
+                            "Nodo {id}: ACTIVO (último heartbeat hace {hace_secs:.1}s) — tuvo episodios de lentitud",
+                        );
+                    } else {
+                        println!("Nodo {id}: ACTIVO (último heartbeat hace {hace_secs:.1}s)",);
+                    }
                 }
                 EstadoNodo::Caido => {
                     let t_caido = info.tiempo_caida.unwrap_or(Duration::ZERO).as_secs_f32();
