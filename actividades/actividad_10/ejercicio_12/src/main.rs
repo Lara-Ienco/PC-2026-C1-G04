@@ -1,4 +1,7 @@
 use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::PathBuf,
     sync::mpsc::{Receiver, Sender, channel},
     thread::{spawn, JoinHandle},
     time::{Duration, Instant},
@@ -8,24 +11,44 @@ const TIMEOUT: Duration = Duration::from_secs(1);
 const CANTIDAD_PARTICIPANTES: usize = 3;
 
 #[derive(Clone)]
-/// Mensajes que el coordinador puede enviar a los participantes
 enum CoordinatorMessage {
-    /// El coordinador le pide a los participantes que se preparen para la transacción
     Prepare,
-    /// El coordinador le indica a los participantes que deben hacer commit de la transacción
     Commit,
-    /// El coordinador le indica a los participantes que deben hacer rollback de la transacción
     Rollback,
 }
 
 #[derive(Clone)]
-/// Mensajes que los participantes pueden enviar al coordinador
 enum ParticipantResponse {
-    /// El participante vota que sí a la transacción
     VoteYes,
-    /// El participante vota que no a la transacción
     #[allow(dead_code)]
     VoteNo,
+}
+
+/// Estructura para manejar el Write-Ahead Log (WAL) de cada participante
+struct WriteAheadLog {
+    file_path: PathBuf,
+}
+
+/// Implementación de métodos para el Write-Ahead Log (WAL)
+impl WriteAheadLog {
+    fn new(participant_id: usize) -> Self {
+        let file_path = PathBuf::from(format!("participant_{}_wal.log", participant_id));
+        // limpiamos logs viejos para iniciar limpios en cada ejecución
+        let _ = fs::remove_file(&file_path);
+        Self { file_path }
+    }
+
+    fn write_entry(&self, entry: &str) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.file_path)
+            .expect("Error al abrir el archivo WAL");
+
+        writeln!(file, "{}", entry).expect("Error al escribir en el WAL");
+        // sincronizamos el archivo con el disco para asegurar que los datos se escriban inmediatamente
+        file.sync_all().expect("Error al sincronizar el WAL con el disco");
+    }
 }
 
 fn crear_participante(
@@ -35,21 +58,33 @@ fn crear_participante(
     let (tx, rx) = channel();
 
     let handle = spawn(move || {
-        // 1. Cada participante espera el mensaje de Prepare del coordinador
-        if matches!(rx.recv(), Ok(CoordinatorMessage::Prepare))
-            && tx_coordinador.send(ParticipantResponse::VoteYes).is_err()
-        {
-            println!("[Participante {id}] No se pudo enviar el voto al coordinador.");
-            return;
+        // inicializamos el archivo WAL del participante
+        let wal = WriteAheadLog::new(id);
+
+        // 1. cada participante espera el mensaje de Prepare del coordinador
+        if matches!(rx.recv(), Ok(CoordinatorMessage::Prepare)) {
+            
+            // --- REGISTRO PREPARED ANTES DE ENVIAR EL VOTO YES ---
+            wal.write_entry("Prepared");
+            println!("[Participante {id}] Registrado 'Prepared' en WAL. Enviando voto YES.");
+
+            if tx_coordinador.send(ParticipantResponse::VoteYes).is_err() {
+                println!("[Participante {id}] No se pudo enviar el voto al coordinador.");
+                return;
+            }
         }
 
-        // 2. Cada participante espera la decision final del coordinador (Commit o Rollback)
+        // 2. cada participante espera la decisión final del coordinador
         match rx.recv() {
             Ok(CoordinatorMessage::Commit) => {
-                println!("[Participante {id}] Se realizó un commit.");
+                // --- REGISTRO COMMIT ANTES DE EJECUTAR LA CONFIRMACIÓN ---
+                wal.write_entry("Commit");
+                println!("[Participante {id}] Registrado 'Commit' en WAL. Se realizó un commit.");
             }
             Ok(CoordinatorMessage::Rollback) => {
-                println!("[Participante {id}] Se realizó un rollback.");
+                // --- REGISTRO ROLLBACK ANTES DE ABORTAR ---
+                wal.write_entry("Rollback");
+                println!("[Participante {id}] Registrado 'Rollback' en WAL. Se realizó un rollback.");
             }
             _ => {
                 println!("[Participante {id}] El mensaje recibido es desconocido.");
@@ -71,14 +106,12 @@ fn recolectar_votos(rx: &Receiver<ParticipantResponse>) -> usize {
     let mut votos_si = 0;
     let start_time = Instant::now();
 
-    // Esperamos los votos de los participantes con el timeout global
     while votos_si < CANTIDAD_PARTICIPANTES {
         let elapsed = start_time.elapsed();
 
         let Some(time_left) = TIMEOUT.checked_sub(elapsed) else {
             break;
         };
-        // Esperamos la respuesta con el tiempo que nos queda del timeout global
         match rx.recv_timeout(time_left) {
             Ok(ParticipantResponse::VoteYes) => {
                 println!("[Coordinador] Ha recibido un voto SI.");
@@ -98,7 +131,6 @@ fn recolectar_votos(rx: &Receiver<ParticipantResponse>) -> usize {
 }
 
 fn tomar_decision(votos_si: usize) -> CoordinatorMessage {
-    // Decide si hace commit o rollback dependiendo de los votos recibidos y si hubo timeout
     if votos_si == CANTIDAD_PARTICIPANTES {
         println!("[Coordinador] Todos los participantes votaron SI. Se realiza un COMMIT.");
         CoordinatorMessage::Commit
@@ -111,7 +143,6 @@ fn tomar_decision(votos_si: usize) -> CoordinatorMessage {
 }
 
 fn enviar_decision(tx_list: &[Sender<CoordinatorMessage>], decision: &CoordinatorMessage) {
-    // Le envía la decision a todos los participantes
     for tx in tx_list {
         if tx.send(decision.clone()).is_err() {
             println!("[Coordinador] No se pudo enviar la decisión a un participante.");
@@ -120,9 +151,9 @@ fn enviar_decision(tx_list: &[Sender<CoordinatorMessage>], decision: &Coordinato
 }
 
 fn main() {
+    println!("=== INICIANDO SIMULACIÓN CON WRITE-AHEAD LOG (WAL) ===");
     let (tx_coordinador, rx_coordinador) = channel();
 
-    // 1. Creamos los hilos de los participantes
     let mut tx_participantes = Vec::new();
     let mut participant_handles = Vec::new();
     for id in 1..=CANTIDAD_PARTICIPANTES {
@@ -132,22 +163,19 @@ fn main() {
     }
     drop(tx_coordinador);
 
-    // 2. Enviamos el mensaje de Prepare a todos los participantes
     enviar_prepare(&tx_participantes);
 
-    // 3. Esperamos los votos de los participantes con el timeout global
     let votos_si = recolectar_votos(&rx_coordinador);
 
-    // 4. Decidimos si hacer commit o rollback
     let decision = tomar_decision(votos_si);
 
-    // 5. Enviamos la decision a todos los participantes
     enviar_decision(&tx_participantes, &decision);
 
-    // Esperamos a que terminen todos los hilos participantes.
     for handle in participant_handles {
         if handle.join().is_err() {
             println!("[Coordinador] Un participante terminó con pánico.");
         }
     }
+    println!("=== SIMULACIÓN FINALIZADA CON ÉXITO ===");
+    println!("Los archivos 'participant_*_wal.log' han sido actualizados en disco.");
 }
